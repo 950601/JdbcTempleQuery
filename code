@@ -1,0 +1,192 @@
+package com.company.testpro.base.dao.impl;
+
+import java.lang.annotation.Annotation;
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import javax.annotation.Resource;
+import javax.persistence.Column;
+import javax.persistence.Table;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.stereotype.Repository;
+import org.springframework.util.LinkedCaseInsensitiveMap;
+import org.springframework.util.StringUtils;
+
+import com.company.testpro.base.dao.BaseDao;
+
+@Repository("baseDaoImpl")
+public class BaseDaoImpl implements BaseDao {
+
+	protected final Log logger = LogFactory.getLog(getClass());
+
+	@Resource
+	private JdbcTemplate jdbcTemplate;
+
+	@Override
+	public void testDao() {
+		System.out.print(jdbcTemplate.toString());
+	}
+
+	/**
+	 * @param <T>注解基类pro
+	 * @param <E>查询VO
+	 * @return List<T> 思路: 传入任何一个Obj, 根据反射获取到注解的表名字与字段名。 //
+	 *         根据反射获取到Obj的所有的属性值，根据数据值 invoke get set方法 判断属性值是否为null,
+	 *         然后拼接SQL 反射能够获取所有的属性 但是无法确定传入的对象 需要查询的具体字段与属性值 需要传入
+	 *         要继承注解类？ 使用jdbcTemplate.queryForList(String sql) 方法
+	 *         获取到List集合，然后返回。
+	 *         返回值：传入的VO -e 的所有字段
+	 *         单个ID查询 JPA
+	 *         查询全部不包含条件 JPA
+	 */
+	@SuppressWarnings({ "rawtypes", "unchecked", "unused" })
+	@Override
+	public <T, E> List<E> getEntityByField(T t, E e, String orderSQL) {
+		String tabName = ""; // 表名称
+		Map whereMap = new HashMap(); // 查询表字段 与 vo字段查询值 用于查询
+		Map vo2TabMap = new HashMap(); // VO映射表名 用于mapping
+		List selectList = new ArrayList();//查询表所有关于Vo的字段名 用于查询
+		try {
+			Class objClz = t.getClass();
+			Annotation[] annotations = objClz.getDeclaredAnnotations();//pro类全部注释
+			Annotation annotation = objClz.getAnnotation(Table.class);
+			tabName = (String) annotation.annotationType().getDeclaredMethod("name").invoke(annotation);//获取表名称
+			Field[] fields = objClz.getDeclaredFields();//pro类全部属性
+			if (fields != null) {
+				for (int i = 0; i < fields.length; i++) {
+					Field field = fields[i];//pro类单个属性
+					Annotation fieldAnno = field.getAnnotation(Column.class);// pro类属性上的column注解 以此  获取表字段名
+					Field[] fieldsVoArr = e.getClass().getDeclaredFields();//vo类全部属性
+					Object fieldObj = null;//vo类属性的值 对应 表查询字段值
+					if (fieldAnno != null) {
+						String fieldStr = (String) fieldAnno.annotationType().getDeclaredMethod("name").invoke(fieldAnno);
+						selectList.add(fieldStr);//添加所有查询字段
+
+						for (Field fieldVo : fieldsVoArr) {
+							if (fieldVo.getName().equals(field.getName())) {// 匹配与当前pro类属性相同的vo类属性 where
+								vo2TabMap.put(fieldVo.getName(), fieldStr); //匹配vo对应表字段 1.表 2.vo
+								fieldVo.setAccessible(true); //属性可能为private
+								fieldObj = fieldVo.get(e);//获取vo映射的该属性的属性值
+								if (fieldStr != null && fieldObj != null) {
+									whereMap.put("field" + i, fieldStr);
+									whereMap.put("value" + i, fieldObj);
+									whereMap.put("fieldLength", i + 1);
+
+								}
+							}
+						}
+
+					}
+				}
+			}
+//			String SQL = getQuerySQL(selectList, whereMap, tabName, orderSQL);
+//			List<E> list = (List<E>) jdbcTemplate.queryForList(SQL);
+
+//			Object [] params = getQueryParameters(whereMap);
+			Map prepareSQLMap = getPrepareSQLMap(selectList, whereMap, tabName, orderSQL);
+			List<E> list = (List<E>) jdbcTemplate.queryForList((String) prepareSQLMap.get("SQL"), (Object[]) prepareSQLMap.get("params"));
+			List mappedList = mappingObj(list, e, vo2TabMap);
+
+			System.out.println("SQL=" + (String) prepareSQLMap.get("SQL") + "\n" + "Params==" + toString((Object[]) prepareSQLMap.get("params")) + "\n" + "ResultList===" + toString(mappedList.toArray()));
+			return mappedList;
+		} catch (Exception ex) {
+			ex.printStackTrace();
+		}
+		return null;
+	}
+
+	public String toString(Object[] obj) {
+		String s = "";
+		for (Object object : obj) {
+			s += object.toString() + " , ";
+		}
+		return s;
+	}
+
+	@SuppressWarnings({ "rawtypes", "unchecked" })
+	public Map getPrepareSQLMap(List selectList, Map whereMap, String tabName, String orderSQL) {
+		Map SQLAndParams = new HashMap();
+		String SQL = " select ";
+		String whereSQL = " where ";
+		List params = new ArrayList();
+		int fieldLength = (int) whereMap.get("fieldLength");
+		for (int j = 0; j < selectList.size(); j++) {
+			SQL += (selectList.size() == 1 || j + 1 == selectList.size()) ? ("t." + selectList.get(j)) : ("t." + selectList.get(j) + ", ");//只有一个字段 或者 循环到最后一个字段 不需要,
+		}
+		for (int i = 0; i < fieldLength; i++) {
+			if (whereMap.get("field" + i) != null && whereMap.get("value" + i) != null) {//jdbctemp newobj list  /orcal ?绑定
+				params.add(whereMap.get("value" + i));
+				whereSQL += (fieldLength == 1 || i + 1 == fieldLength) ? ("t." + whereMap.get("field" + i) + "=" + "?" + "  ") : ("t." + whereMap.get("field" + i) + "=" + "?" + "  " + "and ");
+			}
+		}
+		if (!StringUtils.isEmpty(tabName))
+			SQL += " from " + tabName + " t";
+		if (!StringUtils.isEmpty(whereSQL))
+			SQL += whereSQL;
+		if (!StringUtils.isEmpty(orderSQL))
+			SQL += orderSQL;
+		SQLAndParams.put("SQL", SQL);
+		SQLAndParams.put("params", params.toArray());
+		return SQLAndParams;
+	}
+
+	@SuppressWarnings({ "rawtypes", "unchecked" })
+	public <T, E> List<E> mappingObj(List<T> list, E mapTo, Map vo2TabMap) {
+		List<E> mappedList = new ArrayList();
+		try {
+			Class mapToClz = mapTo.getClass();
+			for (int j = 0; j < list.size(); j++) {//循环一次添加一条eList记录
+				Object mapToObj = mapToClz.newInstance();//每次添加一条新对象
+				for (int i = 0; i < mapToClz.getDeclaredFields().length; i++) {//循环一次添加一条完整记录
+					Field tofield = mapToClz.getDeclaredFields()[i];
+					if (tofield != null) {
+						//这里尽量不要直接用getMethod 
+						//获取set方法需要传入方法参数
+						String setMethodName = "set" + tofield.getName().substring(0, 1).toUpperCase() + tofield.getName().substring(1);
+						Method setMethod = mapToClz.getDeclaredMethod(setMethodName, tofield.getType());
+						setMethod.setAccessible(true);
+						LinkedCaseInsensitiveMap lcim = (LinkedCaseInsensitiveMap) list.get(j);//jdbcTemple查询返回的结果集类型表字段 加值
+						if (lcim != null) {
+							Object obj = lcim.get(vo2TabMap.get(tofield.getName()));
+							setMethod.invoke(mapToObj, obj);//此处如果数据库查出的类型 无法匹配到Vo字段类型 抛出IllegalArgumentException
+						}
+					}
+				}
+
+				mappedList.add((E) mapToObj);
+			}
+			return mappedList;
+		} catch (Exception e) {
+			e.printStackTrace();
+		}
+		return null;
+	}
+
+	//适用于mysq  cloumn基本等于查询
+	@SuppressWarnings("rawtypes")
+	public String getQuerySQL(List selectList, Map whereMap, String tabName, String orderSQL) {//p1.查询条件 
+		String SQL = " select ";
+		String whereSQL = " where ";
+		int fieldLength = (int) whereMap.get("fieldLength");
+		for (int j = 0; j < selectList.size(); j++) {
+			SQL += (selectList.size() == 1 || j + 1 == selectList.size()) ? ("t." + selectList.get(j)) : ("t." + selectList.get(j) + ", ");//只有一个字段 或者 循环到最后一个字段 不需要,
+		}
+		for (int i = 0; i < fieldLength; i++) {
+			if (whereMap.get("field" + i) != null && whereMap.get("value" + i) != null)//jdbctemp newobj list  /orcal ?绑定
+				whereSQL += (fieldLength == 1 || i + 1 == fieldLength) ? ("t." + whereMap.get("field" + i) + "=" + "'" + whereMap.get("value" + i) + "'" + "  ") : ("t." + whereMap.get("field" + i) + "=" + "'" + whereMap.get("value" + i) + "'" + "  " + "and ");
+		}
+		if (!StringUtils.isEmpty(tabName))
+			SQL += " from " + tabName + " t";
+		if (!StringUtils.isEmpty(whereSQL))
+			SQL += whereSQL;
+		if (!StringUtils.isEmpty(orderSQL))
+			SQL += orderSQL;
+		return SQL;
+	}
+
+}
