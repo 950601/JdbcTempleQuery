@@ -1,0 +1,673 @@
+package com.oneform.frameworks.core.base.page;
+
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.List;
+
+import org.apache.commons.lang.StringUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
+import org.springframework.data.domain.Sort.Direction;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.stereotype.Component;
+
+import com.oneform.frameworks.api.vo.common.BaseCriteria;
+import com.oneform.frameworks.core.base.common.CoreConstants;
+import com.oneform.frameworks.core.base.mapper.BeanMapper;
+import com.oneform.frameworks.core.base.page.data.AreaNameService;
+import com.oneform.frameworks.core.base.page.data.ChannelNameService;
+import com.oneform.frameworks.core.base.page.data.CountyNameService;
+import com.oneform.frameworks.core.base.page.data.EnumService;
+import com.oneform.frameworks.core.base.page.data.OpNameService;
+import com.oneform.frameworks.core.base.page.data.OrgNameService;
+import com.oneform.frameworks.core.base.page.data.RegionNameService;
+import com.oneform.frameworks.core.base.spring.ApplicationContextHelper;
+import com.oneform.frameworks.core.cache.redis.EnumVO;
+
+
+@Component
+public class PageUtil {
+	private static Logger logger = LoggerFactory.getLogger(PageUtil.class);
+	private static BeanMapper beanMapper = new BeanMapper();
+	@Autowired
+	private EnumService enumSvr;
+	@Autowired
+	private OrgNameService orgSvr;
+	@Autowired
+	private OpNameService opNameSvr;
+	@Autowired
+	private RegionNameService regionNameSvr;
+	@Autowired
+	private CountyNameService countyNameSvr;
+	@Autowired
+	private AreaNameService areaNameSvr;
+	@Autowired
+	private ChannelNameService chnNameSvr;
+	
+	/**
+	 * 创建分页请求
+	 * @param pageNmbr   查询页码
+	 * @param pageSize   每页记录数
+	 * @return
+	 */
+	public PageRequest buildPageRequest(int pageNmbr) {
+		return new PageRequest(pageNmbr, CoreConstants.PUB_DEFAULT_PAGE_SIZE);
+	}
+	
+	/**
+	 * 创建分页请求
+	 * @param pageNmbr   查询页码
+	 * @param pageSize   每页记录数
+	 * @return
+	 */
+	public PageRequest buildPageRequest(int pageNmbr, int pageSize) {
+		return new PageRequest(pageNmbr, pageSize);
+	}
+	
+	
+	/**
+	 * 创建分页请求
+	 * @param pageNmbr   查询页码
+	 * @param pageSize   每页记录数
+	 * @param sortFields   排序字段
+	 * @param sortOrder  升、降序
+	 * @return
+	 */
+	public PageRequest buildPageRequest(int pageNmbr, int pageSize, String sortField, String sortOrder) {
+		Sort sort = null;
+		if(StringUtils.isNotBlank(sortField)){
+			if(PageOut.DESC.equalsIgnoreCase(sortOrder)){
+				sort = new Sort(Direction.DESC, sortField); 
+			}else if(PageOut.ASC.equalsIgnoreCase(sortOrder)){
+				sort = new Sort(Direction.ASC, sortField); 
+			}
+		}
+		return new PageRequest(pageNmbr, pageSize, sort);
+	}
+	
+	/**
+	 * 转换枚举值
+	 * @param <T>
+	 * @param page
+	 * @param srcClass	数据列表中对象类
+	 * @param targetClass 转换输入的对象类--枚举名称字段需要在此对象上定义
+	 * @param enumIds 枚举字段列表，以 [,] 间隔
+	 * @param keyIds  枚举字段对应的配置数据ID(sys_base_type.key_id)，以 [,] 间隔
+	 * @param cvtOrgIds	需要转换的组织结构ID
+	 * @param cvtOpIds  需要转换的操作员ID
+	 * @return
+	 */
+	public <S, T> PageOut<T> doEnumName(Page<S> page, Class<S> srcClass, Class<T> targetClass, 
+			String enumIds, String keyIds,
+			String cvtOrgIds, String cvtOpIds){
+		
+		PageOut<T> pageOut = packagePage(page);
+		
+		//data be translate
+		List<S>	srcDataList = page.getContent();
+		List<T> targetDataList = beanMapper.copyList(srcDataList, targetClass);
+		
+		if(StringUtils.isBlank(enumIds) && StringUtils.isBlank(cvtOrgIds)  && StringUtils.isBlank(cvtOpIds) ){
+			logger.warn("param: enumIds、cvtOrgIds cvtOpIds and is all null, what do you want to translate ?? ");
+			
+			pageOut.setRows(targetDataList);
+			
+			return pageOut;
+		}
+		
+		//set the enum name
+		List<T> resultList = this.translateEnumName(targetDataList, targetClass, enumIds, keyIds, cvtOrgIds, cvtOpIds,
+				null, null, null, null);
+		
+		pageOut.setRows(resultList);
+		
+		return pageOut;
+	}
+
+	/**
+	 * 转换枚举值
+	 * @param <T>
+	 * @param srcDataList   数据源列表
+	 * @param srcClass	数据列表中对象类
+	 * @param targetClass 转换输入的对象类--枚举名称字段需要在此对象上定义
+	 * @param enumIds 枚举字段列表，以 [,] 间隔
+	 * @param keyIds  枚举字段对应的配置数据ID(sys_base_type.key_id)，以 [,] 间隔
+	 * @param cvtOrgIds	需要转换的组织结构ID
+	 * @param cvtOpIds  需要转换的操作员ID
+	 * @return
+	 */
+	public <S, T> List<T> doEnumName(List<S> srcDataList, Class<S> srcClass, Class<T> targetClass, 
+			String enumIds, String keyIds,
+			String cvtOrgIds, String cvtOpIds){
+		
+		//data be translate
+		List<T> targetDataList = beanMapper.copyList(srcDataList, targetClass);
+		
+		if(StringUtils.isBlank(enumIds) && StringUtils.isBlank(cvtOrgIds)  && StringUtils.isBlank(cvtOpIds) ){
+			logger.error("param: enumIds、cvtOrgIds cvtOpIds and is all null, what do you want to translate ?? ");
+			
+			return targetDataList;
+		}
+		
+		//set the enum name
+		List<T> resultList = this.translateEnumName(targetDataList, targetClass, enumIds, keyIds, cvtOrgIds, cvtOpIds, null, null, null, null);
+		
+		return resultList;
+	}
+
+	/**
+	 * 转换枚举值
+	 * @param <S>
+	 * @param dataList   数据源列表
+	 * @param objectClass	数据列表中对象类
+	 * @param enumIds 枚举字段列表，以 [,] 间隔
+	 * @param keyIds  枚举字段对应的配置数据ID(sys_base_type.key_id)，以 [,] 间隔
+	 * @param cvtOrgIds	需要转换的组织结构ID
+	 * @param cvtOpIds  需要转换的操作员ID
+	 * @return
+	 */
+	public <S> List<S> doEnumName(List<S> dataList, Class<S> objectClass, 
+			String enumIds, String keyIds,
+			String cvtOrgIds, String cvtOpIds){
+
+		if(StringUtils.isBlank(enumIds) && StringUtils.isBlank(cvtOrgIds)  && StringUtils.isBlank(cvtOpIds) ){
+			logger.error("param: enumIds、cvtOrgIds cvtOpIds and is all null, what do you want to translate ?? ");
+			
+			return dataList;
+		}
+		
+		//set the enum name
+		List<S> resultList = this.translateEnumName(dataList, objectClass, enumIds, keyIds, cvtOrgIds, cvtOpIds, null, null, null, null);
+		
+		return resultList;
+	}
+	
+	/**
+	 * 转换枚举值
+	 * @param <S>
+	 * @param object   待转换名称的数据对象
+	 * @param objectClass	数据对象类
+	 * @param enumIds 枚举字段列表，以 [,] 间隔
+	 * @param keyIds  枚举字段对应的配置数据ID(sys_base_type.key_id)，以 [,] 间隔
+	 * @param cvtOrgIds	需要转换的组织结构ID
+	 * @param cvtOpIds  需要转换的操作员ID
+	 * @return
+	 */
+	public <S> Object doEnumName(Object object, Class<S> objectClass, 
+			String enumIds, String keyIds,
+			String cvtOrgIds, String cvtOpIds){
+
+		if(StringUtils.isBlank(enumIds) && StringUtils.isBlank(cvtOrgIds)  && StringUtils.isBlank(cvtOpIds) ){
+			logger.error("param: enumIds、cvtOrgIds cvtOpIds and is all null, what do you want to translate ?? ");
+			
+			return object;
+		}
+		@SuppressWarnings("rawtypes")
+		List<S> dataList = new ArrayList();
+		dataList.add((S)object);
+		
+		//set the enum name
+		List<S> resultList = this.translateEnumName(dataList, objectClass, enumIds, keyIds, cvtOrgIds, cvtOpIds, null, null, null, null);
+		if(!resultList.isEmpty()){
+			return resultList.get(0);
+		}else{
+			return object;
+		}
+	}
+	
+	
+	/**
+	 * 转换枚举值
+	 * @param <T>
+	 * @param page
+	 * @param srcClass	数据列表中对象类（同时支持地市、区县、网格、渠道）
+	 * @param targetClass 转换输入的对象类--枚举名称字段需要在此对象上定义
+	 * @param enumIds 枚举字段列表，以 [,] 间隔
+	 * @param keyIds  枚举字段对应的配置数据ID(sys_base_type.key_id)，以 [,] 间隔
+	 * @param cvtOrgIds	需要转换的组织结构ID
+	 * @param cvtOpIds  需要转换的操作员ID
+	 * @param regionIds 需要转换的地市字段ID
+	 * @param countyIds 需要转换区县字段ID
+	 * @param areaIds	需要转换网格字段ID
+	 * @param channelIds 需要转换渠道字段ID
+	 * @return
+	 */
+	public <S, T> PageOut<T> doEnumNameWithAreaAndChn(Page<S> page, Class<S> srcClass, Class<T> targetClass, 
+			String enumIds, String keyIds,
+			String cvtOrgIds, String cvtOpIds,
+			String cvtRegionIds, String cvtCountyIds, String cvtAreaIds, String cvtChannelIds){
+		
+		PageOut<T> pageOut = packagePage(page);
+		
+		//data be translate
+		List<S>	srcDataList = page.getContent();
+		List<T> targetDataList = beanMapper.copyList(srcDataList, targetClass);
+		
+		if(StringUtils.isBlank(enumIds) && StringUtils.isBlank(cvtOrgIds)  && StringUtils.isBlank(cvtOpIds)
+				&& StringUtils.isBlank(cvtRegionIds) && StringUtils.isBlank(cvtCountyIds) && StringUtils.isBlank(cvtAreaIds) 
+				&& StringUtils.isBlank(cvtChannelIds) ){
+			logger.warn("param: enumIds、cvtOrgIds cvtOpIds regionIds countyIds areaIds  channelIds is all null, what do you want to translate ?? ");
+			
+			pageOut.setRows(targetDataList);
+			
+			return pageOut;
+		}
+		
+		//set the enum name
+		List<T> resultList = this.translateEnumName(targetDataList, targetClass, enumIds, keyIds, cvtOrgIds, cvtOpIds, cvtRegionIds, cvtCountyIds, cvtAreaIds, cvtChannelIds);
+		
+		pageOut.setRows(resultList);
+		
+		return pageOut;
+	}
+
+	/**
+	 * 转换枚举值
+	 * @param <T>
+	 * @param srcDataList   数据源列表（同时支持地市、区县、网格、渠道）
+	 * @param srcClass	数据列表中对象类
+	 * @param targetClass 转换输入的对象类--枚举名称字段需要在此对象上定义
+	 * @param enumIds 枚举字段列表，以 [,] 间隔
+	 * @param keyIds  枚举字段对应的配置数据ID(sys_base_type.key_id)，以 [,] 间隔
+	 * @param cvtOrgIds	需要转换的组织结构ID
+	 * @param cvtOpIds  需要转换的操作员ID
+	 * @return
+	 */
+	public <S, T> List<T> doEnumNameWithAreaAndChn(List<S> srcDataList, Class<S> srcClass, Class<T> targetClass, 
+			String enumIds, String keyIds,
+			String cvtOrgIds, String cvtOpIds,
+			String cvtRegionIds, String cvtCountyIds, String cvtAreaIds, String cvtChannelIds){
+		
+		//data be translate
+		List<T> targetDataList = beanMapper.copyList(srcDataList, targetClass);
+		
+		if(StringUtils.isBlank(enumIds) && StringUtils.isBlank(cvtOrgIds)  && StringUtils.isBlank(cvtOpIds) ){
+			logger.warn("param: enumIds、cvtOrgIds cvtOpIds regionIds countyIds areaIds  channelIds is all null, what do you want to translate ?? ");
+			
+			return targetDataList;
+		}
+		
+		//set the enum name
+		List<T> resultList = this.translateEnumName(targetDataList, targetClass, enumIds, keyIds, cvtOrgIds, cvtOpIds, cvtRegionIds, cvtCountyIds, cvtAreaIds, cvtChannelIds);
+		
+		return resultList;
+	}
+
+	/**
+	 * 转换枚举值
+	 * @param <S>
+	 * @param dataList   数据源列表（同时支持地市、区县、网格、渠道）
+	 * @param objectClass	数据列表中对象类
+	 * @param enumIds 枚举字段列表，以 [,] 间隔
+	 * @param keyIds  枚举字段对应的配置数据ID(sys_base_type.key_id)，以 [,] 间隔
+	 * @param cvtOrgIds	需要转换的组织结构ID
+	 * @param cvtOpIds  需要转换的操作员ID
+	 * @return
+	 */
+	public <S> List<S> doEnumNameWithAreaAndChn(List<S> dataList, Class<S> objectClass, 
+			String enumIds, String keyIds,
+			String cvtOrgIds, String cvtOpIds,
+			String cvtRegionIds, String cvtCountyIds, String cvtAreaIds, String cvtChannelIds){
+
+		if(StringUtils.isBlank(enumIds) && StringUtils.isBlank(cvtOrgIds)  && StringUtils.isBlank(cvtOpIds) ){
+			logger.warn("param: enumIds、cvtOrgIds cvtOpIds regionIds countyIds areaIds  channelIds is all null, what do you want to translate ?? ");
+			
+			return dataList;
+		}
+		
+		//set the enum name
+		List<S> resultList = this.translateEnumName(dataList, objectClass, enumIds, keyIds, cvtOrgIds, cvtOpIds, cvtRegionIds, cvtCountyIds, cvtAreaIds, cvtChannelIds);
+		
+		return resultList;
+	}
+	
+	/**
+	 * 转换枚举值
+	 * @param <S>
+	 * @param object   待转换名称的数据对象（同时支持地市、区县、网格、渠道）
+	 * @param objectClass	数据对象类
+	 * @param enumIds 枚举字段列表，以 [,] 间隔
+	 * @param keyIds  枚举字段对应的配置数据ID(sys_base_type.key_id)，以 [,] 间隔
+	 * @param cvtOrgIds	需要转换的组织结构ID
+	 * @param cvtOpIds  需要转换的操作员ID
+	 * @return
+	 */
+	public <S> Object doEnumNameWithAreaAndChn(Object object, Class<S> objectClass, 
+			String enumIds, String keyIds,
+			String cvtOrgIds, String cvtOpIds,
+			String cvtRegionIds, String cvtCountyIds, String cvtAreaIds, String cvtChannelIds){
+
+		if(StringUtils.isBlank(enumIds) && StringUtils.isBlank(cvtOrgIds)  && StringUtils.isBlank(cvtOpIds) ){
+			logger.warn("param: enumIds、cvtOrgIds cvtOpIds regionIds countyIds areaIds  channelIds is all null, what do you want to translate ?? ");
+			
+			return object;
+		}
+		@SuppressWarnings("rawtypes")
+		List<S> dataList = new ArrayList();
+		dataList.add((S)object);
+		
+		//set the enum name
+		List<S> resultList = this.translateEnumName(dataList, objectClass, enumIds, keyIds, cvtOrgIds, cvtOpIds, cvtRegionIds, cvtCountyIds, cvtAreaIds, cvtChannelIds);
+		if(!resultList.isEmpty()){
+			return resultList.get(0);
+		}else{
+			return object;
+		}
+	}
+	
+	
+	
+	/**
+	 * 转换枚举值
+	 * @param <T>
+	 * @param <T>
+	 * @param srcDataList	数据源
+	 * @param srcClass	数据列表中对象类
+	 * @param targetClass 转换输入的对象类--枚举名称字段需要在此对象上定义
+	 * @param enumIds 枚举字段列表，以 [,] 间隔
+	 * @param keyIds  枚举字段对应的配置数据ID(sys_base_type.key_id)，以 [,] 间隔
+	 * @param cvtOrgIds	需要转换的组织结构ID
+	 * @param cvtOpIds  需要转换的操作员ID
+	 * @return
+	 */
+	private <T> List<T> translateEnumName(List<T> targetDataList, Class<T> targetClass, 
+			String enumIds, String keyIds,
+			String cvtOrgIds, String cvtOpIds,
+			String cvtRegionIds, String cvtCountyIds, String cvtAreaIds, String cvtChannelIds){
+		
+		if(StringUtils.isBlank(enumIds) && StringUtils.isBlank(cvtOrgIds)  && StringUtils.isBlank(cvtOpIds) ){
+			logger.error("param: enumIds、cvtOrgIds cvtOpIds regionIds countyIds areaIds  channelIds is all null, what do you want to translate ?? ");
+			
+			return targetDataList;
+		}
+		
+		List<?> orgNameList = new ArrayList();
+		boolean isNeedCvtOrgId = false;
+		//need to translate org_id list
+		if(StringUtils.isNotBlank(cvtOrgIds)){
+			orgNameList = orgSvr.getOrgList();
+			if(orgNameList != null && !orgNameList.isEmpty()){
+				isNeedCvtOrgId = true;
+			}
+		}
+		
+		List<?> opNameList = new ArrayList();
+		boolean isNeedCvtOpId = false;
+		//need to translate org_id list
+		if(StringUtils.isNotBlank(cvtOpIds)){
+			opNameList = opNameSvr.getOpNameList();
+			
+			if(opNameList != null && !opNameList.isEmpty()){
+				isNeedCvtOpId = true;
+			}
+		}
+		
+		List<?> regionNameList = new ArrayList();
+		boolean isNeedCvtRegionCode = false;
+		//need to translate region list
+		if(StringUtils.isNotBlank(cvtRegionIds)){
+			regionNameList = regionNameSvr.getRegionNameList();
+			if(regionNameList != null && !regionNameList.isEmpty()){
+				isNeedCvtRegionCode = true;
+			}
+		}
+
+		List<?> countyNameList = new ArrayList();
+		boolean isNeedCvtCountyCode = false;
+		//need to translate county list
+		if(StringUtils.isNotBlank(cvtCountyIds)){
+			countyNameList = countyNameSvr.getCountyNameList();
+			if(countyNameList != null && !countyNameList.isEmpty()){
+				isNeedCvtCountyCode = true;
+			}
+		}
+
+		List<?> areaNameList = new ArrayList();
+		boolean isNeedCvtAreaCode = false;
+		//need to translate county list
+		if(StringUtils.isNotBlank(cvtAreaIds)){
+			areaNameList = areaNameSvr.getAreaNameList();
+			if(areaNameList != null && !areaNameList.isEmpty()){
+				isNeedCvtAreaCode = true;
+			}
+		}
+		
+		List<?> chnNameList = new ArrayList();
+		boolean isNeedCvtChnId = false;
+		//need to translate county list
+		if(StringUtils.isNotBlank(cvtChannelIds)){
+			chnNameList = chnNameSvr.getChannelNameList();
+			if(chnNameList != null && !chnNameList.isEmpty()){
+				isNeedCvtChnId = true;
+			}
+		}
+		
+		HashMap enumMap = null;
+		String[] idList = null;
+		String[] keyIdList = null;
+		boolean isNeedCvtEnum = false;
+		if(StringUtils.isNotBlank(enumIds)){
+			idList = enumIds.split(",");
+			keyIdList = keyIds.split(",");
+			if(idList.length != keyIdList.length){
+				logger.error("input id not match keyId, can't translate，this is a fatal error...");
+				isNeedCvtEnum = false;
+			}
+
+			enumMap = enumSvr.getEnumByIds(keyIds);
+			
+			if(enumMap != null && !enumMap.isEmpty()){
+				isNeedCvtEnum = true;
+			}
+		}
+		
+
+		Iterator<T> it = targetDataList.iterator();
+		while(it.hasNext()){
+			Object obj = it.next();
+			
+			T clazz = targetClass.cast(obj);
+			
+			//set enum
+			if(isNeedCvtEnum){
+				int index = 0;
+				for(String id : idList){
+					//the class field must be name as id+Name, eg: id: menuType, then: menuTypeName
+					String keyId = keyIdList[index++];
+					
+					@SuppressWarnings("unchecked")
+					List<EnumVO> enumList  = (List<EnumVO>) enumMap.get(keyId);
+					
+					setNameValue(targetClass, clazz, id, enumList, 1);
+				}
+			}
+			
+			//set org_name
+			if(isNeedCvtOrgId){
+				String[] orgFieldList = cvtOrgIds.split(",");
+				for(String id : orgFieldList){
+					setNameValue(targetClass, clazz, id, orgNameList, 2);
+				}
+			}
+			
+			//set op_name
+			if(isNeedCvtOpId){
+				String[] opFieldList = cvtOpIds.split(",");
+				for(String id : opFieldList){
+					setNameValue(targetClass, clazz, id, opNameList, 3);
+				}
+			}
+			
+			//set region name
+			if(isNeedCvtRegionCode){
+				String[] regionFieldList = cvtRegionIds.split(",");
+				for(String id : regionFieldList){
+					setNameValue(targetClass, clazz, id, regionNameList, 4);
+				}
+			}
+			
+			//set county name
+			if(isNeedCvtCountyCode){
+				String[] countyFieldList = cvtCountyIds.split(",");
+				for(String id : countyFieldList){
+					setNameValue(targetClass, clazz, id, countyNameList, 5);
+				}
+			}
+			
+			//set area name
+			if(isNeedCvtAreaCode){
+				String[] areaFieldList = cvtAreaIds.split(",");
+				for(String id : areaFieldList){
+					setNameValue(targetClass, clazz, id, areaNameList, 6);
+				}
+			}
+			
+			//set channel name
+			if(isNeedCvtChnId){
+				String[] chnFieldList = cvtChannelIds.split(",");
+				for(String id : chnFieldList){
+					setNameValue(targetClass, clazz, id, chnNameList, 7);
+				}
+			}
+		}
+		
+
+		return targetDataList;
+	}
+	
+	private static String convert2ClassFieldName(String orgName){
+		String tmpName = orgName.trim();
+		return  tmpName.substring(0, 1).toUpperCase() + tmpName.substring(1);
+	}
+	
+	private <S, T>PageOut<T> packagePage(Page<S> page){
+		
+		PageOut<T> out = new PageOut<T>();
+		out.setPageSize(page.getSize());
+		out.setPageNumber(page.getNumber());
+		
+		out.setTotal(page.getTotalElements());
+		out.setPageCount(page.getTotalPages());
+		
+		return out;
+	}
+	
+	private <T> void setNameValue(Class<T> targetClass, T clazz, String idField, List dataList, int type){
+		
+		String nameField = idField + "Name";
+		
+		try {
+			
+			Method getMethod = targetClass.getMethod("get" + convert2ClassFieldName(idField), null);
+			
+			//must be int or long
+			Object idValue = getMethod.invoke(clazz);
+			if(idValue == null){
+				return;
+			}
+			
+			long longIdValue = Long.parseLong(idValue.toString());
+			
+			String nameValue;
+			//get value
+			if(type == 1){//enum
+				nameValue = enumSvr.getNameByItemId(dataList, longIdValue);
+			}else if(type == 2){//org cvt
+				nameValue = orgSvr.getNameByOrgId(dataList, longIdValue);
+			}else if(type == 3){//op cvt
+				nameValue = opNameSvr.getNameByOpId(dataList, longIdValue);
+			}else if(type == 4){//region cvt
+				nameValue = regionNameSvr.getNameByRegionCode(dataList, longIdValue);
+			}else if(type == 5){//county cvt
+				nameValue = countyNameSvr.getNameByCountyCode(dataList, longIdValue);
+			}else if(type == 6){//area cvt
+				nameValue = areaNameSvr.getNameByAreaCode(dataList, longIdValue);
+			}else if(type == 7){//area channel
+				nameValue = chnNameSvr.getNameByChannelId(dataList, longIdValue);
+			}else{
+				return;
+			}
+			Method setMethod = targetClass.getMethod("set" + convert2ClassFieldName(nameField), String.class);
+			setMethod.invoke(clazz, nameValue);
+		} catch (NoSuchMethodException e) {
+			// TODO: handle exception
+			logger.error(" the attr: {} is not exists in the class: {}", nameField, targetClass.getName());
+			
+			e.printStackTrace();
+
+		} catch (InvocationTargetException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		} catch (IllegalAccessException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		} catch (IllegalArgumentException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		}
+	}
+	
+	
+	public static String packageJdbcPageQuery(String sql, String specOrderField, int orderBy, BaseCriteria criteria){
+		StringBuffer sbSql = new StringBuffer(sql);
+		
+		if(StringUtils.isNotBlank(specOrderField)){
+			sbSql.append(" ORDER BY " + specOrderField);
+			if(orderBy == 1){
+				sbSql.append(" DESC ");
+			}else{
+				sbSql.append(" ASC ");
+			}
+			
+		}else if(criteria.getSortField() != null && !"".equals(criteria.getSortField())){
+			sbSql.append(" order by " + criteria.getSortField());
+			if(criteria.getSortOrder() != null && !"".equals(criteria.getSortOrder())){
+				sbSql.append("  " + criteria.getSortOrder());
+			}
+		}
+		
+		int iPageNumber = criteria.getPageNumber();
+		int iPageSize = criteria.getPageSize();
+		int iFrom = iPageNumber * iPageSize;
+		
+		StringBuffer sbSqlPage = new StringBuffer("select * from (select t.*, rownum rwnum from (")
+			 .append(sbSql.toString())
+			 .append(") t ) ")
+			 .append(" where  rwnum > " + iFrom + " AND rwnum <=" + (iPageNumber+1) * iPageSize);
+
+		return sbSqlPage.toString();
+	}
+	
+	public static PageOut packgePageOut(List dataList, long totalCount, BaseCriteria criteria){
+		PageOut pageOut = new PageOut();
+		
+		pageOut.setRows(dataList);
+		pageOut.setPageNumber(criteria.getPageNumber());
+		pageOut.setPageSize(criteria.getPageSize());
+		pageOut.setTotal(totalCount);
+		
+		return pageOut;
+	}
+	
+	public static long getTotalCountNoBind(String sql){
+		JdbcTemplate jdbcTemplate = ApplicationContextHelper.getBean(JdbcTemplate.class);
+		long total = jdbcTemplate.queryForObject("select COUNT(*) from (" + sql + ") a", Long.class);
+		
+		return total;
+	}
+	
+	public static long getTotalCountWithBind(String sql, Object[] params){
+		JdbcTemplate jdbcTemplate = ApplicationContextHelper.getBean(JdbcTemplate.class);
+		long total = jdbcTemplate.queryForObject("select COUNT(*) from (" + sql + ") a", params, Long.class);
+		
+		return total;
+	}
+	
+}
