@@ -1,0 +1,446 @@
+package com.oneform.frame.common;
+
+import java.lang.annotation.Annotation;
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
+import javax.persistence.Column;
+import javax.persistence.Table;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.stereotype.Component;
+import org.springframework.util.LinkedCaseInsensitiveMap;
+import org.springframework.util.StringUtils;
+
+import com.oneform.frameworks.api.vo.common.BaseCriteria;
+import com.oneform.frameworks.core.base.page.PageOut;
+import com.oneform.frameworks.core.base.page.PageUtil;
+
+/**
+ * @author XuMing
+ */
+@Component
+public class CommonQuery {
+	private static Logger logger = LoggerFactory.getLogger(CommonQuery.class);
+	@Autowired
+	private JdbcTemplate jdbcTemplate;
+	/**
+	 * 指定查询方式的单表查询
+	 * @param baseClz  注解基类
+	 * @param condClass 查询条件类
+	 * @param returnClz 返回结果类
+	 * @param queryCondMap 查询条件Map key:字段名 value：查询方式
+	 * @return Mapped ObjList
+	 */
+	@SuppressWarnings({ "rawtypes", "unchecked", "unused", "static-access" })
+	public <T, E> List getEntityByQcMap(Class baseClz, E condClass, Class returnClz, Map queryCondMap) {
+		String tabName = ""; // 表名称
+		Map whereMap = new HashMap(); // 查询表字段 与 vo字段查询值 用于查询
+		Map vo2TabMap = new HashMap(); // VO映射表名 用于mapping
+		List selectList = new ArrayList();//查询表所有关于Vo的字段名 用于查询
+
+		try {
+			Annotation[] annotations = baseClz.getDeclaredAnnotations();//pro类全部注释
+			Annotation annotation = baseClz.getAnnotation(Table.class);
+			tabName = (String) annotation.annotationType().getDeclaredMethod("name").invoke(annotation);//获取表名称
+			Field[] fields = baseClz.getDeclaredFields();//pro类全部属性
+			Field[] fieldsVoArr = condClass.getClass().getDeclaredFields();//cond类全部属性
+
+			Field[] fieldsReturn = returnClz.getDeclaredFields();//返回类 全部属性
+			if (fields != null) {
+				for (int i = 0; i < fields.length; i++) {
+					Field field = fields[i];//pro类单个属性
+					Annotation fieldAnno = field.getAnnotation(Column.class);// pro类属性上的column注解 以此  获取表字段名
+					Object fieldObj = null;//vo类属性的值 对应 表查询字段值
+					if (fieldAnno != null) {
+						String fieldStr = (String) fieldAnno.annotationType().getDeclaredMethod("name").invoke(fieldAnno);
+						selectList.add(fieldStr);//添加所有查询字段
+
+						for (Field fieldReturn : fieldsReturn) {
+							if (fieldReturn.getName().equals(field.getName())) {// 匹配与当前pro类属性相同的return类属性 mapping
+								vo2TabMap.put(fieldReturn.getName(), fieldStr); //匹配返回类对应表字段 1.表 2.vo
+							}
+						}
+
+						for (Field fieldVo : fieldsVoArr) {
+							if (fieldVo.getName().equals(field.getName())) {// 匹配与当前pro类属性相同的cond类属性 where
+								vo2TabMap.put(fieldVo.getName(), fieldStr);
+								fieldVo.setAccessible(true); //属性可能为private
+								fieldObj = fieldVo.get(condClass);//获取vo映射的该属性的属性值
+								if (fieldStr != null && fieldObj != null) {
+									whereMap.put("field" + i, fieldStr);
+									whereMap.put("value" + i, fieldObj);
+									whereMap.put("fieldLength", i + 1);
+								}
+							}
+						}
+					}
+
+				}
+			}
+
+			Map prepareSQLMap = getQCSQLMap(selectList, whereMap, tabName);
+
+			JdbcPlugin jdbcPlugin = new JdbcPlugin((String) prepareSQLMap.get("SQL"), true);
+
+			for (Field field : fields) {
+				sec:for (int i = 0; i < fieldsVoArr.length; i++) {
+					Field fieldVo = fieldsVoArr[i];
+					if (fieldVo.getName().equals(field.getName())) {// 注解基类必须包含cond类字段
+						fieldVo.setAccessible(true); //属性可能为private
+						Object fieldObj = fieldVo.get(condClass);//获取vo映射的该属性的属性值
+						if(queryCondMap.size()==0&&fieldObj != null){//不传查询Map 默认按非空字段 等于查询
+							if(fieldObj.getClass()==Integer.class){//排除int默认值
+								if((Integer)fieldObj!=0)
+									jdbcPlugin.addQueryCondition(jdbcPlugin.EQUAL, "t." + vo2TabMap.get(fieldVo.getName()), fieldObj);
+							}else{
+								jdbcPlugin.addQueryCondition(jdbcPlugin.EQUAL, "t." + vo2TabMap.get(fieldVo.getName()), fieldObj);
+							}
+						}else{
+							//根据 qcMap表名获取与当前字段匹配 key 如果没有默认  =与 ，有就匹配 后面的运算符
+							Set qcKeySet = queryCondMap.keySet();
+							for (int j = 0; j < qcKeySet.size(); j++) { //匹配一次 打断内循环
+								if (vo2TabMap.get(fieldVo.getName()).equals(qcKeySet.toArray()[j]) && fieldObj != null) { //有值 有查询条件
+									jdbcPlugin.addQueryCondition((int) queryCondMap.get(qcKeySet.toArray()[j]), "t." + (String) qcKeySet.toArray()[j], fieldObj);//字段 与当前相同 有查询条件
+									continue sec;
+								}  
+							}
+							if (fieldObj != null) {// 传了Map cond类有值 map没有字段
+								if(fieldObj.getClass()==Integer.class){//排除int默认值
+									if((Integer)fieldObj!=0)
+										jdbcPlugin.addQueryCondition(jdbcPlugin.EQUAL, "t." + vo2TabMap.get(fieldVo.getName()), fieldObj);
+								}else{
+									jdbcPlugin.addQueryCondition(jdbcPlugin.EQUAL, "t." + vo2TabMap.get(fieldVo.getName()), fieldObj);
+								} 
+							}
+						}
+					}
+				}
+			}
+			List<E> list = jdbcPlugin.exportParms().length==0?(List<E>) jdbcTemplate.queryForList(jdbcPlugin.exportSql()):(List<E>) jdbcTemplate.queryForList(jdbcPlugin.exportSql(), jdbcPlugin.exportParms());
+			List mappedList = mappingObjClz(list, returnClz, vo2TabMap);
+			return mappedList;
+
+		} catch (Exception ex) {
+			ex.printStackTrace();
+		}
+		return null;
+	}
+	/**
+	 *  默认根据Cond类进行等于查询
+	 * @param baseClz 
+	 * @param condClass
+	 * @param returnClz
+	 * @param otherCondSQL  后缀查询语句 Order group等 
+	 * @return  mapped ObjList
+	 * @see getEntityByQcMap
+	 */
+	@SuppressWarnings({ "rawtypes", "unchecked", "unused", "static-access" })
+	public <T, E> List getEntityByField(Class baseClz, E condClass,Class returnClz, String otherCondSQL) {
+		String tabName = ""; // 表名称
+		Map whereMap = new HashMap(); // 查询表字段 与 vo字段查询值 用于查询
+		Map vo2TabMap = new HashMap(); // VO映射表名 用于mapping
+		List selectList = new ArrayList();//查询表所有关于Vo的字段名 用于查询
+		try {
+			Annotation[] annotations = baseClz.getDeclaredAnnotations();//pro类全部注释
+			Annotation annotation = baseClz.getAnnotation(Table.class);
+			tabName = (String) annotation.annotationType().getDeclaredMethod("name").invoke(annotation);//获取表名称
+			Field[] fields = baseClz.getDeclaredFields();//pro类全部属性
+			Field[] fieldsVoArr = condClass.getClass().getDeclaredFields();//cond类全部属性
+			Field[] fieldsReturn = returnClz.getDeclaredFields();//返回类 全部属性
+			if (fields != null) {
+				for (int i = 0; i < fields.length; i++) {
+					Field field = fields[i];//pro类单个属性
+					Annotation fieldAnno = field.getAnnotation(Column.class);// pro类属性上的column注解 以此  获取表字段名
+					Object fieldObj = null;//vo类属性的值 对应 表查询字段值
+					if (fieldAnno != null) {
+						String fieldStr = (String) fieldAnno.annotationType().getDeclaredMethod("name").invoke(fieldAnno);
+						selectList.add(fieldStr);//添加所有查询字段
+						for (Field fieldReturn : fieldsReturn) {
+							if (fieldReturn.getName().equals(field.getName())) {// 匹配与当前pro类属性相同的return类属性 mapping
+								vo2TabMap.put(fieldReturn.getName(), fieldStr); //匹配返回类对应表字段 1.表 2.vo
+							}
+						}
+						for (Field fieldVo : fieldsVoArr) {
+							if (fieldVo.getName().equals(field.getName())) {// 匹配与当前pro类属性相同的cond类属性 where
+								vo2TabMap.put(fieldVo.getName(), fieldStr);
+								fieldVo.setAccessible(true); //属性可能为private
+								fieldObj = fieldVo.get(condClass);//获取vo映射的该属性的属性值
+								if (fieldStr != null && fieldObj != null) {
+									whereMap.put("field" + i, fieldStr);
+									whereMap.put("value" + i, fieldObj);
+									whereMap.put("fieldLength", i + 1);
+								}
+							}
+						}
+					}
+				}
+			}
+
+			Map prepareSQLMap = getQCSQLMap(selectList, whereMap, tabName);
+			JdbcPlugin jdbcPlugin = new JdbcPlugin((String) prepareSQLMap.get("SQL"), true);
+			for (Field field : fields) {
+				for (int i = 0; i < fieldsVoArr.length; i++) {
+					Field fieldVo = fieldsVoArr[i];
+					if (fieldVo.getName().equals(field.getName())) {// 注解基类必须包含cond类字段
+						fieldVo.setAccessible(true); //属性可能为private
+						Object fieldObj = fieldVo.get(condClass);//获取vo映射的该属性的属性值
+						if (fieldObj != null) {// 传了Map cond类有值 map没有字段
+							if(fieldObj.getClass()==Integer.class){//排除int默认值
+								if((Integer)fieldObj!=0)
+									jdbcPlugin.addQueryCondition(jdbcPlugin.EQUAL, "t." + vo2TabMap.get(fieldVo.getName()), fieldObj);
+							}
+						}
+					}
+				}
+			}
+			String combineSql = jdbcPlugin.exportSql()+" "+otherCondSQL;
+			List<E> list = new ArrayList<E>();
+			if(otherCondSQL==null)
+				list = (List<E>) jdbcTemplate.queryForList(jdbcPlugin.exportSql(),jdbcPlugin.exportParms());
+			else
+				list =(List<E>) jdbcTemplate.queryForList(combineSql,jdbcPlugin.exportParms());
+			List mappedList = mappingObjClz(list, returnClz, vo2TabMap);
+			if(logger.isDebugEnabled()){
+				if(combineSql!=null)
+					logger.info("SQL = " + combineSql); 
+			}
+			
+			return mappedList;
+
+		} catch (Exception ex) {
+			ex.printStackTrace();
+		}
+		return null;
+	}
+	/**
+	 * 分页查询 单表
+	 * @param baseClz
+	 * @param condClass
+	 * @param returnClz
+	 * @param queryCondMap
+	 * @param orderField 排序字段（可选）
+	 * @param isDesc  是否倒序 （可选）
+	 * @see getEntityByQcMap
+	 * @return  未枚举的PageOut rows
+	 */
+	@SuppressWarnings({ "rawtypes", "unchecked", "unused", "static-access" })
+	public <T, E extends BaseCriteria> PageOut getPageEntityByQcMap(Class baseClz, E condClass,Class returnClz, Map queryCondMap,String orderField,boolean isDesc) {
+			String tabName = ""; // 表名称
+			Map whereMap = new HashMap(); // 查询表字段 与 vo字段查询值 用于查询
+			Map vo2TabMap = new HashMap(); // VO映射表名 用于mapping
+			List selectList = new ArrayList();//查询表所有关于Vo的字段名 用于查询
+
+			try {
+				Annotation[] annotations = baseClz.getDeclaredAnnotations();//pro类全部注释
+				Annotation annotation = baseClz.getAnnotation(Table.class);
+				tabName = (String) annotation.annotationType().getDeclaredMethod("name").invoke(annotation);//获取表名称
+				Field[] fields = baseClz.getDeclaredFields();//pro类全部属性
+				Field[] fieldsVoArr = condClass.getClass().getDeclaredFields();//cond类全部属性
+
+				Field[] fieldsReturn = returnClz.getDeclaredFields();//返回类 全部属性
+				if (fields != null) {
+					for (int i = 0; i < fields.length; i++) {
+						Field field = fields[i];//pro类单个属性
+						Annotation fieldAnno = field.getAnnotation(Column.class);// pro类属性上的column注解 以此  获取表字段名
+						Object fieldObj = null;//vo类属性的值 对应 表查询字段值
+						if (fieldAnno != null) {
+							String fieldStr = (String) fieldAnno.annotationType().getDeclaredMethod("name").invoke(fieldAnno);
+							selectList.add(fieldStr);//添加所有查询字段
+
+							for (Field fieldReturn : fieldsReturn) {
+								if (fieldReturn.getName().equals(field.getName())) {// 匹配与当前pro类属性相同的return类属性 mapping
+									vo2TabMap.put(fieldReturn.getName(), fieldStr); //匹配返回类对应表字段 1.表 2.vo
+								}
+							}
+
+							for (Field fieldVo : fieldsVoArr) {
+								if (fieldVo.getName().equals(field.getName())) {// 匹配与当前pro类属性相同的cond类属性 where
+									vo2TabMap.put(fieldVo.getName(), fieldStr);
+									fieldVo.setAccessible(true); //属性可能为private
+									fieldObj = fieldVo.get(condClass);//获取vo映射的该属性的属性值
+									if (fieldStr != null && fieldObj != null) {
+										whereMap.put("field" + i, fieldStr);
+										whereMap.put("value" + i, fieldObj);
+										whereMap.put("fieldLength", i + 1);
+									}
+								}
+							}
+						}
+
+					}
+				}
+
+				Map prepareSQLMap = getQCSQLMap(selectList, whereMap, tabName);
+				
+				JdbcPlugin jdbcPlugin = new JdbcPlugin((String) prepareSQLMap.get("SQL"), true);
+
+				for (Field field : fields) {
+					sec:for (int i = 0; i < fieldsVoArr.length; i++) {
+						Field fieldVo = fieldsVoArr[i];
+						if (fieldVo.getName().equals(field.getName())) {// 注解基类必须包含cond类字段
+							fieldVo.setAccessible(true); //属性可能为private
+							Object fieldObj = fieldVo.get(condClass);//获取vo映射的该属性的属性值
+							if(queryCondMap.size()==0&&fieldObj != null){//不传查询Map cond有值  默认按非空字段 等于查询
+								if(fieldObj.getClass()==Integer.class){//排除int默认值
+									if((Integer)fieldObj!=0)
+										jdbcPlugin.addQueryCondition(jdbcPlugin.EQUAL, "t." + vo2TabMap.get(fieldVo.getName()), fieldObj);
+								}else{
+									jdbcPlugin.addQueryCondition(jdbcPlugin.EQUAL, "t." + vo2TabMap.get(fieldVo.getName()), fieldObj);
+								}
+							}else{
+								//根据 qcMap表名获取与当前字段匹配 key 如果没有默认  =与 ，有就匹配 后面的运算符
+								Set qcKeySet = queryCondMap.keySet();
+								for (int j = 0; j < qcKeySet.size(); j++) { //匹配到 终止此次循环
+									if (vo2TabMap.get(fieldVo.getName()).equals(qcKeySet.toArray()[j]) && fieldObj != null) { //有值 有查询条件
+										jdbcPlugin.addQueryCondition((int) queryCondMap.get(qcKeySet.toArray()[j]), "t." + (String) qcKeySet.toArray()[j], fieldObj);//字段 与当前相同 有查询条件
+										continue sec;
+									}  
+								}
+								if (fieldObj != null) {// 传了Map cond类有值 map没有字段
+									if(fieldObj.getClass()==Integer.class){//排除int默认值
+										if((Integer)fieldObj!=0)
+											jdbcPlugin.addQueryCondition(jdbcPlugin.EQUAL, "t." + vo2TabMap.get(fieldVo.getName()), fieldObj);
+									}else{
+										jdbcPlugin.addQueryCondition(jdbcPlugin.EQUAL, "t." + vo2TabMap.get(fieldVo.getName()), fieldObj);
+									} 
+								}
+							}
+						}
+					}
+				}
+				
+				String querySql = jdbcPlugin.exportSql();
+				long totalCount = PageUtil.getTotalCountWithBind(querySql, jdbcPlugin.exportParms());
+				
+				PageOut pageOut = new PageOut();
+				pageOut.setPageNumber((int)condClass.getClass().getSuperclass().getDeclaredMethod("getPageNumber").invoke(condClass));
+				pageOut.setPageSize((int)condClass.getClass().getSuperclass().getDeclaredMethod("getPageSize").invoke(condClass));
+				if(totalCount >0){
+					String pageSql = "";
+					if(orderField!=null){
+						if(isDesc)
+							pageSql = PageUtil.packageJdbcPageQuery(querySql, orderField, FrameConstants.PUB_ORDER_BY_DESC, condClass);
+						else
+							pageSql = PageUtil.packageJdbcPageQuery(querySql, orderField, FrameConstants.PUB_ORDER_BY_ASC, condClass);
+					}else{
+							//没有传入分页排序 
+							pageSql = PageUtil.packageJdbcPageQuery(querySql, null, FrameConstants.PUB_ORDER_BY_DESC, condClass);
+					}
+				List<E> list = jdbcPlugin.exportParms().length==0?(List<E>) jdbcTemplate.queryForList(pageSql):(List<E>) jdbcTemplate.queryForList(pageSql, jdbcPlugin.exportParms());
+				List mappedList = mappingObjClz(list, returnClz, vo2TabMap);
+				pageOut = PageUtil.packgePageOut(mappedList, totalCount, condClass);
+				return pageOut;
+				}
+
+			} catch (Exception ex) {
+				ex.printStackTrace();
+			}
+			return null;
+		}
+	
+	/**
+	 * @param selectList
+	 * @param whereMap
+	 * @param tabName
+	 * @param orderSQL
+	 * @return SQLAndParamsMap SQL 和 参数列表
+	 * @see getQuerySQL
+	 * @author XuMing
+	 * @Date 2017年3月23日
+	 */
+	@SuppressWarnings({ "rawtypes", "unchecked", "unused" })
+	private Map getPrepareSQLMap(List selectList, Map whereMap, String tabName, String otherCondSQL) {
+		Map SQLAndParams = new HashMap();
+		String SQL = " select ";
+		String whereSQL = " where 1=1 ";
+		List params = new ArrayList();
+		int fieldLength = (int) whereMap.get("fieldLength");
+		for (int j = 0; j < selectList.size(); j++) {
+			SQL += (selectList.size() == 1 || j + 1 == selectList.size()) ? ("t." + selectList.get(j)) : ("t." + selectList.get(j) + ", ");//只有一个字段 或者 循环到最后一个字段 不需要,
+		}
+		for (int i = 0; i < fieldLength; i++) {
+			if (whereMap.get("field" + i) != null && whereMap.get("value" + i) != null) {
+				if (params.size() == 0)
+					whereSQL += " and ";
+				params.add(whereMap.get("value" + i));
+				whereSQL += (fieldLength == 1 || i + 1 == fieldLength) ? ("t." + whereMap.get("field" + i) + "=" + "?" + "  ") : ("t." + whereMap.get("field" + i) + "=" + "?" + "  " + "and ");
+			}
+		}
+		if (!StringUtils.isEmpty(tabName))
+			SQL += " from " + tabName + " t";
+		if (!StringUtils.isEmpty(whereSQL))
+			SQL += whereSQL;
+		if (!StringUtils.isEmpty(otherCondSQL))
+			SQL += otherCondSQL;
+		SQLAndParams.put("SQL", SQL);
+		SQLAndParams.put("params", params.toArray());
+		return SQLAndParams;
+	}
+
+	
+	/**
+	 * QueryCondition SQL获取
+	 */
+	@SuppressWarnings({ "rawtypes", "unchecked" })
+	private Map getQCSQLMap(List selectList, Map whereMap, String tabName) {
+		Map SQLAndParams = new HashMap();
+		String SQL = " select ";
+		String whereSQL = " where 1=1 ";
+		List params = new ArrayList();
+		for (int j = 0; j < selectList.size(); j++) {
+			SQL += (selectList.size() == 1 || j + 1 == selectList.size()) ? ("t." + selectList.get(j)) : ("t." + selectList.get(j) + ", ");//只有一个字段 或者 循环到最后一个字段 不需要,
+		}
+		if (!StringUtils.isEmpty(tabName))
+			SQL += " from " + tabName + " t";
+		if (!StringUtils.isEmpty(whereSQL))
+			SQL += whereSQL;
+		SQLAndParams.put("SQL", SQL);
+		SQLAndParams.put("params", params.toArray());
+		return SQLAndParams;
+	}
+	@SuppressWarnings({ "rawtypes", "unchecked" })
+	private <T, E> List<E> mappingObjClz(List<T> list, Class mapToClz, Map vo2TabMap) {
+		List<E> mappedList = new ArrayList();
+		try {
+			for (int j = 0; j < list.size(); j++) {//循环一次添加一条eList记录
+				Object mapToObj = mapToClz.newInstance();//每次添加一条新对象
+				for (int i = 0; i < mapToClz.getDeclaredFields().length; i++) {//循环一次添加一条完整记录
+					Field tofield = mapToClz.getDeclaredFields()[i];
+					if (tofield != null) {
+						//这里尽量不要直接用getMethod 
+						//获取set方法需要传入方法参数
+						String setMethodName = "set" + tofield.getName().substring(0, 1).toUpperCase() + tofield.getName().substring(1);
+						try {
+							Method setMethod = mapToClz.getDeclaredMethod(setMethodName, tofield.getType());
+							if(setMethod!=null){
+								setMethod.setAccessible(true);
+								LinkedCaseInsensitiveMap lcim = (LinkedCaseInsensitiveMap) list.get(j);//jdbcTemple查询返回的结果集类型表字段 加值
+								if (lcim != null) {
+									Object obj = lcim.get(vo2TabMap.get(tofield.getName()));
+									setMethod.invoke(mapToObj, obj);//此处如果数据库查出的类型 无法匹配到Vo字段类型 抛出IllegalArgumentException
+								}
+							}
+						} catch (Exception e) { //如果异常 说明没有该方法，执行下一个set
+							continue;
+						}
+					}
+				}
+				mappedList.add((E) mapToObj);
+			}
+			return mappedList;
+		} catch (Exception e) {
+			e.printStackTrace();
+		}
+		return null;
+	}
+	
+}
