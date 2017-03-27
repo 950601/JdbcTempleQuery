@@ -1,0 +1,224 @@
+package com.oneform.frame.common;
+
+import java.util.ArrayList;
+import java.util.Date;
+import java.util.List;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class JdbcPlugin {
+	private static Logger logger = LoggerFactory.getLogger(JdbcPlugin.class);
+	
+	public static final int EQUAL = 1;
+	public static final int NOT_EQUAL = 2;
+	public static final int GREATER = 3;
+	public static final int LESS = 4;
+	public static final int GREATER_OR_EQUAL = 5;
+	public static final int LESS_OR_EQUAL = 6;
+	public static final int LIKE = 7;
+	public static final int IN = 8;
+	
+	public static final int ASC = 11;
+	public static final int DESC = 12;
+	
+	private StringBuilder sb;
+	private List<Object> parmList;
+	
+	public JdbcPlugin(String sql, boolean hasWhereWord) {
+		this.sb = new StringBuilder().append(sql);
+		if(!hasWhereWord){
+			sb.append(" WHERE 1 = 1");
+		}
+		
+		this.parmList = new ArrayList<>();
+	}
+	
+	public JdbcPlugin(String sql, boolean hasWhereWord, List<Object> initParam) {
+		this.sb = new StringBuilder().append(sql);
+		if(!hasWhereWord){
+			sb.append(" WHERE 1 = 1");
+		}
+		
+		this.parmList = initParam;
+	}
+	
+	public void addQeuryCondition(String fieldName, Integer parm){
+		this.addQeuryCondition(EQUAL, fieldName, parm, 0, Integer.class);
+	}
+	public void addQeuryCondition(String fieldName, Long parm){
+		this.addQeuryCondition(EQUAL, fieldName, parm, 0, Long.class);
+	}
+	public void addQeuryCondition(String fieldName, String parm){
+		this.addQeuryCondition(EQUAL, fieldName, parm, 0, String.class);
+	}
+	public void addQeuryCondition(String fieldName, Date parm){
+		this.addQeuryCondition(EQUAL, fieldName, parm, 0, Long.class);
+	}
+	
+	public void addQeuryCondition(int operator, String fieldName, Integer parm){
+		this.addQeuryCondition(operator, fieldName, parm, 0, Integer.class);
+	}
+	public void addQeuryCondition(int operator, String fieldName, Long parm){
+		this.addQeuryCondition(operator, fieldName, parm, 0, Long.class);
+	}
+	public void addQeuryCondition(int operator, String fieldName, String parm){
+		this.addQeuryCondition(operator, fieldName, parm, 0, String.class);
+	}
+	public void addQeuryConditionDateFormat(int operator, String fieldName, String parm){
+		this.addQeuryCondition(operator, fieldName, parm, 1, String.class);
+	}
+	public void addQeuryConditionDateFormat2(int operator, String fieldName, String parm){
+		this.addQeuryCondition(operator, fieldName, parm, 2, String.class);
+	}
+	public void addQeuryCondition(int operator, String fieldName, Date parm){
+		this.addQeuryCondition(operator, fieldName, parm, 0, Date.class);
+	}
+	/**
+	 * 通用设值方法  JdbcPlugin
+	 * @author XuMing
+	 */
+	public <T> void addQueryCondition(int operator,String fieldName,T parm){
+		this.addQeuryCondition(operator, fieldName, parm, 0, parm.getClass());
+	}
+	//默认等于查询
+	public <T> void addQueryCondition(String fieldName,T parm){
+		this.addQeuryCondition(EQUAL, fieldName, parm, 0, parm.getClass());
+	}
+	public void addQeuryCondition(int operator, String fieldName, Object parm, int specDateFormat, Class<?> clazz){
+		if(null == fieldName || 0  == fieldName.length() || null == parm){
+			return;
+		}
+		
+		this.sb.append(" AND " + fieldName);
+		
+		convert(parm, clazz);
+		
+		String valueSign = "?";
+		if(specDateFormat == 1){
+			valueSign = "TO_DATE(?, 'YYYY-MM-DD')";
+		}else if(specDateFormat == 2){
+			valueSign = "TO_DATE(?, 'YYYY-MM-DD HH24:MI:SS')";
+		}
+		
+		switch (operator) {
+		case EQUAL:
+			this.sb.append(" = ").append(valueSign);
+			this.parmList.add(parm);
+			break;
+		case NOT_EQUAL:
+			this.sb.append(" != ").append(valueSign);
+			this.parmList.add(parm);
+			break;	
+		case GREATER:
+			this.sb.append(" > ").append(valueSign);
+			this.parmList.add(parm);
+			break;
+		case LESS:
+			this.sb.append(" < ").append(valueSign);
+			this.parmList.add(parm);
+			break;
+		case GREATER_OR_EQUAL:
+			this.sb.append(" >= ").append(valueSign);
+			this.parmList.add(parm);
+			break;
+		case LESS_OR_EQUAL:
+			this.sb.append(" <= ").append(valueSign);
+			this.parmList.add(parm);
+			break;
+		case LIKE:
+			this.sb.append(" LIKE ?");
+			this.parmList.add("%"+parm+"%");
+			break;
+		case IN:
+			String parms[] = parm.toString().split(",");
+			if(null != parms && parms.length > 0){
+				this.sb.append(" IN (");
+				for(int i = 0; i < parms.length; i++){
+					this.sb.append(" ? ");
+					if(i != parms.length - 1){
+						this.sb.append(",");
+					}
+					
+					this.parmList.add(parms[i]);
+				}
+				this.sb.append(" )");
+			}
+		default:
+			break;
+		}
+	}
+	
+	public void addQeuryCondition(String fieldName, Object[] parms, Class<?> clazz){
+		if(null == fieldName || 0  == fieldName.length() || null == parms){
+			return;
+		}
+		
+		this.sb.append(" AND " + fieldName);
+		
+		this.sb.append(" IN (");
+		for(int i = 0; i < parms.length; i++){
+			this.sb.append(" ? ");
+			if(i != parms.length - 1){
+				this.sb.append(",");
+			}
+			
+			Object parm = parms[i];
+			convert(parm, clazz);
+			this.parmList.add(parm);
+		}
+		this.sb.append(" )");
+	}
+	
+	public void addQeuryOrder(String fieldName){
+		this.sb.append(" ORDER BY " + fieldName + " ASC");
+	}
+	
+	public void addQeuryOrder(String fieldName, int direction){
+		switch (direction) {
+		case ASC:
+			this.sb.append(" ORDER BY " + fieldName + " ASC");
+			break;
+		case DESC:
+			this.sb.append(" ORDER BY " + fieldName + " DESC");
+			break;
+		default:
+			break;
+		}
+	}
+	
+	public void clear(){
+		this.sb.delete(0, this.sb.length());
+		this.parmList.clear();
+	}
+	
+	public String exportSql(){
+		if(logger.isDebugEnabled()){
+			logger.debug("exportSql() - show sql - {}", this.sb.toString()); 
+		}
+		return this.sb.toString();
+	}
+	
+	public Object[] exportParms(){
+		if(logger.isDebugEnabled()){
+//			logger.debug("exportSql() - show parms ----------------------"); 
+			for(int i = 0; i < parmList.size(); i++){
+				logger.debug("" + i + " = " + parmList.get(i)); 
+			}
+//			logger.debug("------------------------------------------------"); 
+		}
+		return this.parmList.toArray(new Object[parmList.size()]);
+	}
+	
+	private void convert(Object parm, Class<?> clazz){
+		if(clazz == Integer.class){
+			parm = (Integer)parm;
+		}else if(clazz == Long.class){
+			parm = (Long)parm;
+		}else if(clazz == String.class){
+			parm = (String)parm;
+		}else if(clazz == Date.class){
+			parm = (Date)parm;
+		}
+	}
+}
